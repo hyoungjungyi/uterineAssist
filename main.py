@@ -6,11 +6,11 @@ from PIL import Image
 import os
 from skimage.morphology import binary_closing
 from scipy.spatial.distance import cdist
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve, distance_transform_edt, binary_fill_holes
 import shutil
 from pathlib import Path
 import cv2
-
+#from combinedMask import extend_line_find_transition
 
 palette=[
   0, 0, 0,
@@ -28,15 +28,73 @@ palette += [0] * (256*3 - len(palette))
 # 필요한 3개의 클래스에 대한 스켈레톤만 시각화
 image_dir = "/mnt/home/chaelin/hyunjung/skeleton/data/train/labels"
 output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/allSk"
-
 os.makedirs(output_dir, exist_ok=True)
-
 images = os.listdir(image_dir)
+
+def fill_holes_opencv(mask):
+    """
+    mask: 0/1, 0/255, bool 모두 가능 (내부=1 또는 255)
+    반환: 내부가 255, 배경이 0인 uint8 마스크
+    """
+    # 1. uint8 0/255로 변환
+    mask = (mask > 0).astype(np.uint8) * 255
+
+    # 2. flood fill로 외곽 채우기
+    im_floodfill = mask.copy()
+    h, w = mask.shape[:2]
+    mask2 = np.zeros((h+2, w+2), np.uint8)
+    cv2.floodFill(im_floodfill, mask2, (0,0), 255)
+
+    # 3. 배경 반전
+    im_floodfill_inv = cv2.bitwise_not(im_floodfill)
+
+    # 4. 원본과 OR (내부 구멍만 채움)
+    filled = mask | im_floodfill_inv
+    return filled
+
+#마스크에 내접하는 가장 큰 원 찾기
+
+def find_largest_incircle(mask, image_name="default", save_dir=None):
+    # 1. 입력 마스크 채우기
+    binary_mask = (mask > 0).astype(bool)
+    filled_mask = binary_fill_holes(binary_mask).astype(np.uint8) * 255
+    
+    # 2. 거리 변환 계산
+    dist_map = distance_transform_edt(filled_mask)
+    if np.max(dist_map) == 0:
+        return (0, 0), 0, filled_mask
+    
+    # 3. 최대 반지름 및 중심 계산
+    max_radius = np.max(dist_map)
+    max_row, max_col = np.unravel_index(np.argmax(dist_map), dist_map.shape)
+    center = (int(max_col), int(max_row))
+    diameter = int(2 * max_radius)
+    
+    # 4. 이미지 저장 (마스크: 파란색, 내접원: 초록색)
+    save_path = os.path.join(save_dir, f"{image_name}.png")
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # RGB 이미지 생성
+    result_img = np.zeros((*filled_mask.shape, 3), dtype=np.uint8)
+    
+    # 마스크 영역 파란색 채우기
+    result_img[filled_mask == 255] = [255, 0, 0]  # BGR 포맷
+    
+    # 내접원 영역 초록색 채우기
+    y, x = np.ogrid[:filled_mask.shape[0], :filled_mask.shape[1]]
+    dist_from_center = np.sqrt((x - center[0])**2 + (y - center[1])**2)
+    result_img[dist_from_center <= max_radius] = [0, 255, 0]
+    
+    cv2.imwrite(save_path, result_img)
+    
+    return center, diameter
+
 
 def calc_distance(pt1,pt2):
     pt1=np.array(pt1)
     pt2=np.array(pt2)
     return np.linalg.norm(pt1-pt2)
+
 
 def find_endpoints(skeleton):
     kernel = np.array([[1,1,1],
@@ -49,9 +107,11 @@ def find_endpoints(skeleton):
         endpoints |= skeleton.astype(bool)
     return endpoints
 
+
 #yx xy 바꾸기
 def yx2xy(pt):
     return (pt[1],pt[0])
+
 
 #직선 연장해서 > 마스크값이 1에서 0으로 바뀌는 지점 찾기
 def extend_line_find_transition(mask, start_point,end_point,direction='end',num_points=100):
@@ -120,17 +180,20 @@ for image_name in images:
     cervix_skeleton = skeletons[3]
     fundus_skeleton = skeletons[4]
 
-    cervix_start, cervix_end=tuple(np.argwhere(endpoints_dict[3]))[0] , tuple(np.argwhere(endpoints_dict[3]))[1]
-    fundus_start, fundus_end=tuple(np.argwhere(endpoints_dict[4]))[0] , tuple(np.argwhere(endpoints_dict[4]))[1]
+    #cervix 스켈레톤 너무 짧은 경우
+    if len(np.argwhere(endpoints_dict[3]))==1:
+        cervix_start=tuple(np.argwhere(endpoints_dict[3]))[0]
+    else:
+        cervix_start, cervix_end=tuple(np.argwhere(endpoints_dict[3]))[0] , tuple(np.argwhere(endpoints_dict[3]))[1]
+    #fundus 스켈레톤 너무 짧은 경우
+    if len(np.argwhere(endpoints_dict[4]))==1:
+        fundus_start=tuple(np.argwhere(endpoints_dict[4]))[0]
+    else:
+        fundus_start, fundus_end=tuple(np.argwhere(endpoints_dict[4]))[0] , tuple(np.argwhere(endpoints_dict[4]))[1]
 
-
-        
-    
     img_pil = Image.fromarray(img.astype(np.uint8), mode="P")
     img_pil.putpalette(palette)
     img_pil=img_pil.convert('RGB')
-    
-
     
     combined_mask=np.isin(img,[2,3,4]).astype(np.uint8)
     combined_mask=binary_closing(combined_mask,footprint=np.ones((3,3)))
@@ -142,7 +205,25 @@ for image_name in images:
     #선 두개 긋기
     mask_fundus = (img == 4).astype(np.uint8)
     mask_cervix = (img == 3).astype(np.uint8)
+    mask_endo = (img == 2).astype(np.uint8)
+    mask_uterus = fill_holes_opencv((img == 1).astype(np.uint8))
 
+
+    # transition_fundus = extend_line_find_transition(
+    #     img,
+    #     fundus_start,
+    #     fundus_end,
+    #     direction='start',
+    #     target_to=3
+    # )
+
+    # transition_cervix = extend_line_find_transition(
+    #     img,
+    #     cervix_start,
+    #     cervix_end,
+    #     direction='end',
+    #     target_to=4
+    # )
     transition_fundus = extend_line_find_transition(mask_fundus, fundus_start, fundus_end, direction='end')
     transition_cervix = extend_line_find_transition(mask_cervix,cervix_start, cervix_end, direction='start')
     print(f"transition_fundus:{transition_fundus}, transition_cervix:{transition_cervix}")
@@ -153,6 +234,14 @@ for image_name in images:
     #길이 재기
     length_fundus=calc_distance(fundus_start,transition_fundus)
     length_cervix=calc_distance(transition_cervix,cervix_end)
+    
+    #최대 내접원 찾기
+    (center_x, center_y), diameter = find_largest_incircle(mask_endo,save_dir="endo_circle")
+    print(f"최대 내막 내접원의 중심: ({center_x}, {center_y}), 지름: {diameter}")
+    
+    (center_x, center_y), diameter = find_largest_incircle(mask_uterus,save_dir="uterus_circle")
+    print(f"최대 uterus 내접원의 중심: ({center_x}, {center_y}), 지름: {diameter}")
+
     
     #엔도 스켈레톤 이진화> 컨투어 추출> 길이계산
     endo_skeleton=(endo_skeleton>0).astype(np.uint8)
@@ -170,9 +259,6 @@ for image_name in images:
     )
 
     
-    
-    
-    
     # 시각화 및 저장
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(8, 4), sharex=True, sharey=True)
     ax = axes.ravel()
@@ -185,7 +271,6 @@ for image_name in images:
     ax[1].axis('off')
     ax[1].set_title('Combined skeleton', fontsize=20)
     ax[1].scatter([transition_cervix[1], transition_fundus[1]], [transition_cervix[0], transition_fundus[0]], c='red', s=5)
-
     
     # 각 클래스별 endpoint에 점 찍기
     colors = {2: 'lime', 3: 'blue', 4: 'skyblue'}
@@ -196,11 +281,7 @@ for image_name in images:
             coords=pick_two_farthest_points(coords)
         ys, xs = coords[:, 0], coords[:, 1]
         ax[1].scatter(xs, ys, s=5, facecolors=colors[class_id])
-    
-    
 
-
-    
     ax[1].legend(loc='upper right', fontsize=12)
     plt.tight_layout()
 
@@ -211,8 +292,8 @@ for image_name in images:
 
     print(f"Saved skeleton image for {image_name} at {save_path}")
     
-    with open("result.txt", "a", encoding="utf-8") as f:
-        f.write(result_str)
+    # with open("result.txt", "a", encoding="utf-8") as f:
+    #     f.write(result_str)
 
 
 
