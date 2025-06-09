@@ -6,11 +6,13 @@ from PIL import Image
 import os
 from skimage.morphology import binary_closing
 from scipy.spatial.distance import cdist
-from scipy.ndimage import convolve, distance_transform_edt, binary_fill_holes
+from scipy.ndimage import convolve
 import shutil
 from pathlib import Path
 import cv2
-#from combinedMask import extend_line_find_transition
+from utils import make_axis_attention_map, find_largest_incircle, find_largest_incircle_attention, find_largest_inscribed_circle, merge_skeletons_and_smooth
+from pca import find_major_axis_pca, draw_pca_result
+
 
 palette=[
   0, 0, 0,
@@ -31,63 +33,37 @@ output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/allSk"
 os.makedirs(output_dir, exist_ok=True)
 images = os.listdir(image_dir)
 
-def fill_holes_opencv(mask):
-    """
-    mask: 0/1, 0/255, bool 모두 가능 (내부=1 또는 255)
-    반환: 내부가 255, 배경이 0인 uint8 마스크
-    """
-    # 1. uint8 0/255로 변환
-    mask = (mask > 0).astype(np.uint8) * 255
 
-    # 2. flood fill로 외곽 채우기
+def fill_holes_opencv(mask):
+    mask = (mask > 0).astype(np.uint8) * 255
     im_floodfill = mask.copy()
     h, w = mask.shape[:2]
     mask2 = np.zeros((h+2, w+2), np.uint8)
     cv2.floodFill(im_floodfill, mask2, (0,0), 255)
-
-    # 3. 배경 반전
     im_floodfill_inv = cv2.bitwise_not(im_floodfill)
-
-    # 4. 원본과 OR (내부 구멍만 채움)
     filled = mask | im_floodfill_inv
     return filled
 
-#마스크에 내접하는 가장 큰 원 찾기
+def draw_major_axis(mask):
+    filled = fill_holes_opencv(mask)
+    contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return cv2.cvtColor(filled, cv2.COLOR_GRAY2BGR)
+    cnt = max(contours, key=cv2.contourArea)
+    (x, y), (width, height), angle = cv2.fitEllipse(cnt)
+    major_axis = max(width, height)
+    radius = int(major_axis / 2)
+    color_img = cv2.cvtColor(filled, cv2.COLOR_GRAY2BGR)
+    cv2.circle(color_img, (int(x), int(y)), radius, (0, 0, 255), 1)  # 빨강 원
+    return color_img
 
-def find_largest_incircle(mask, image_name="default", save_dir=None):
-    # 1. 입력 마스크 채우기
-    binary_mask = (mask > 0).astype(bool)
-    filled_mask = binary_fill_holes(binary_mask).astype(np.uint8) * 255
-    
-    # 2. 거리 변환 계산
-    dist_map = distance_transform_edt(filled_mask)
-    if np.max(dist_map) == 0:
-        return (0, 0), 0, filled_mask
-    
-    # 3. 최대 반지름 및 중심 계산
-    max_radius = np.max(dist_map)
-    max_row, max_col = np.unravel_index(np.argmax(dist_map), dist_map.shape)
-    center = (int(max_col), int(max_row))
-    diameter = int(2 * max_radius)
-    
-    # 4. 이미지 저장 (마스크: 파란색, 내접원: 초록색)
-    save_path = os.path.join(save_dir, f"{image_name}.png")
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # RGB 이미지 생성
-    result_img = np.zeros((*filled_mask.shape, 3), dtype=np.uint8)
-    
-    # 마스크 영역 파란색 채우기
-    result_img[filled_mask == 255] = [255, 0, 0]  # BGR 포맷
-    
-    # 내접원 영역 초록색 채우기
-    y, x = np.ogrid[:filled_mask.shape[0], :filled_mask.shape[1]]
-    dist_from_center = np.sqrt((x - center[0])**2 + (y - center[1])**2)
-    result_img[dist_from_center <= max_radius] = [0, 255, 0]
-    
-    cv2.imwrite(save_path, result_img)
-    
-    return center, diameter
+def fill_mask(mask):
+
+    mask = (mask > 0).astype(np.uint8) * 255
+    mask=np.where(mask>1,1,mask)
+
+    return mask
+
 
 
 def calc_distance(pt1,pt2):
@@ -197,6 +173,8 @@ for image_name in images:
     
     combined_mask=np.isin(img,[2,3,4]).astype(np.uint8)
     combined_mask=binary_closing(combined_mask,footprint=np.ones((3,3)))
+    smoothed_points, combined_skeleton = merge_skeletons_and_smooth(combined_mask, smoothing_sigma=2)
+    
     skeleton=skeletonize(combined_mask)
     out_img = Image.fromarray(all_skeletons, mode="P")
     out_img.putpalette(palette)
@@ -206,28 +184,10 @@ for image_name in images:
     mask_fundus = (img == 4).astype(np.uint8)
     mask_cervix = (img == 3).astype(np.uint8)
     mask_endo = (img == 2).astype(np.uint8)
-    mask_uterus = fill_holes_opencv((img == 1).astype(np.uint8))
-
-
-    # transition_fundus = extend_line_find_transition(
-    #     img,
-    #     fundus_start,
-    #     fundus_end,
-    #     direction='start',
-    #     target_to=3
-    # )
-
-    # transition_cervix = extend_line_find_transition(
-    #     img,
-    #     cervix_start,
-    #     cervix_end,
-    #     direction='end',
-    #     target_to=4
-    # )
+    mask_uterus = fill_mask(img).astype(np.uint8)
     transition_fundus = extend_line_find_transition(mask_fundus, fundus_start, fundus_end, direction='end')
     transition_cervix = extend_line_find_transition(mask_cervix,cervix_start, cervix_end, direction='start')
     print(f"transition_fundus:{transition_fundus}, transition_cervix:{transition_cervix}")
-    
     cv2.line(out_img,yx2xy(fundus_start),yx2xy(transition_fundus),(255,0,0),1)
     cv2.line(out_img,yx2xy(transition_cervix),yx2xy(cervix_end),(255,0,0),1)
     
@@ -236,11 +196,28 @@ for image_name in images:
     length_cervix=calc_distance(transition_cervix,cervix_end)
     
     #최대 내접원 찾기
-    (center_x, center_y), diameter = find_largest_incircle(mask_endo,save_dir="endo_circle")
-    print(f"최대 내막 내접원의 중심: ({center_x}, {center_y}), 지름: {diameter}")
+    (endo_center_x, endo_center_y), endo_diameter = find_largest_incircle(mask_endo,image_name,save_dir="endo_circle")
+    (uterus_center_x, uterus_center_y), uterus_diameter = find_largest_incircle(mask_uterus,image_name,save_dir="uterus_circle")
+    (attn_endo_center_x, attn_endo_center_y), attn_endo_diameter = find_largest_incircle_attention(mask_endo,image_name,save_dir="attn_endo_circle")
+    (attn_uterus_center_x, attn_uterus_center_y), attn_uterus_diameter = find_largest_incircle_attention(mask_uterus,image_name,save_dir="attn_uterus_circle")
+    result = find_largest_inscribed_circle(mask_endo, endo_skeleton)
+    uterus_result = find_largest_inscribed_circle(mask_uterus, combined_skeleton)
+    #pca
+    center, pc1, pc2, length, (pc1, pc2) = find_major_axis_pca(mask_uterus)
+    draw_pca_result(mask_uterus,image_name)
     
-    (center_x, center_y), diameter = find_largest_incircle(mask_uterus,save_dir="uterus_circle")
-    print(f"최대 uterus 내접원의 중심: ({center_x}, {center_y}), 지름: {diameter}")
+    results=[
+        f"{image_name} results",
+        "attention 없이: ",
+        f"최대 내막 내접원의 중심: ({endo_center_x}, {endo_center_y}), 지름: {endo_diameter}",
+        f"최대 uterus 내접원의 중심: ({uterus_center_x}, {uterus_center_y}), 지름: {uterus_diameter}",
+        f"스켈레톤 따라가는 최대 내접원 중심: ({result[0]}, {result[1]}), 지름: {result[2]}",
+        f"스켈레톤 따라가는 유터러스 내접원 중심: ({uterus_result[0]}, {uterus_result[1]}), 지름: {uterus_result[2]}",
+        "attention 있이:"
+        f"최대 내막 내접원의 중심: ({attn_endo_center_x}, {attn_endo_center_y}), 지름: {attn_endo_diameter}",
+        f"최대 uterus 내접원의 중심: ({attn_uterus_center_x}, {attn_uterus_center_y}), 지름: {attn_uterus_diameter}"
+        # f"pca 적용한 중심: {center}, 두께: {length}"
+    ]
 
     
     #엔도 스켈레톤 이진화> 컨투어 추출> 길이계산
@@ -251,12 +228,6 @@ for image_name in images:
         length_endo=cv2.arcLength(main_contour,closed=False)
     else:
         length_endo=0
-    print(f"fundus 길이 : {length_fundus}, cervix 길이: {length_cervix}, endo 길이: {length_endo}")
-    result_str = (
-    f"transition_fundus:{transition_fundus}, transition_cervix:{transition_cervix}\n"
-    f"fundus 길이 : {length_fundus}, cervix 길이: {length_cervix}, endo 길이: {length_endo}\n"
-    f"\n"
-    )
 
     
     # 시각화 및 저장
@@ -292,8 +263,10 @@ for image_name in images:
 
     print(f"Saved skeleton image for {image_name} at {save_path}")
     
-    # with open("result.txt", "a", encoding="utf-8") as f:
-    #     f.write(result_str)
+    with open('results.txt','a') as f:
+        for line in results:
+            f.write(line+'\n')
+    
 
 
 
