@@ -5,15 +5,8 @@ import matplotlib.pyplot as plt
 from PIL import Image
 import os
 from skimage.morphology import binary_closing
-from scipy.spatial.distance import cdist
-import shutil
-from pathlib import Path
 import cv2
 from utils import *
-import sknw
-import networkx as nx
-from skimage.draw import line
-
 
 
 palette=[
@@ -31,7 +24,8 @@ palette += [0] * (256*3 - len(palette))
     
 # 필요한 3개의 클래스에 대한 스켈레톤만 시각화
 image_dir = "/mnt/home/chaelin/hyunjung/skeleton/data/train/labels"
-output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/thickness_comparison"
+# output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/endo_thickness"
+output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/uterus_thickness"
 os.makedirs(output_dir, exist_ok=True)
 images = os.listdir(image_dir)
 skeleton_coords=[]
@@ -92,6 +86,10 @@ for image_name in images:
     mask_fundus = (img == 3).astype(np.uint8)
     mask_cervix = (img == 4).astype(np.uint8)
     mask_endo = (img == 2).astype(np.uint8)
+    mask_uterus= (img == 1).astype(np.uint8)
+    
+
+    
     mask_uterus = fill_mask(img).astype(np.uint8)
     endo_coords = sorted([tuple(coord) for coord in np.argwhere(endo_skeleton)], key=lambda x: x[0])
     cervix_coords = sorted([tuple(coord) for coord in np.argwhere(cervix_skeleton)], key=lambda x: x[0])
@@ -137,15 +135,15 @@ for image_name in images:
 
     
     sorted_points = sort_points_greedy(connect_points)
-    print(f"connect points: {sorted_points} length of connect points: {len(sorted_points)}")
+    # print(f"connect points: {sorted_points} length of connect points: {len(sorted_points)}")
     out_img,all_coords=custom_connect(out_img,connect_points)
     img=np.array(img_pil.convert('RGB'))
 
     
     results=[
         f"{image_name} results",
-        f"cervix start:{cervix_start} cervix end:{cervix_end} cervix point:{cervix_point} endo point:{endo_point}",
-        f"length of connect points: {len(connect_points)}"
+        f"cervix start:{cervix_start} cervix end:{cervix_end} cervix point:{cervix_point} endo point:{endo_point}"
+        # f"length of connect points: {len(connect_points)}"
     ]
     for class_id, endpoints in endpoints_dict.items():
         for point in endpoints:
@@ -195,25 +193,29 @@ for image_name in images:
     
     
     
-    #4가지 두께 재는 방법 비교 저장    
-    steps=[2,5,10]
+    """
+    endo ( 내막 ) 재는 4가지 방법 비교 / uterus ( 자궁 ) 두께 재는 4가지 방법 비교
+    """ 
+    steps=[2,5,7]
     img_list=[]
     thickness_list=[]
     for step in steps:
         img_copy=img.copy()
-        thickness=measure_uterus_thickness(mask_endo,all_coords,img_copy,step=step,probe_half_length=200)
+        thickness=measure_simple_thickness(mask_uterus,all_coords,img_copy,step=step,probe_half_length=400)
+        #thickness=measure_simple_thickness(mask_endo,all_coords,img_copy,step=step,probe_half_length=200)
         img_list.append(img_copy)
         thickness_list.append(thickness)
-
+        results.append(f"[Simple Method] for {step} step, thickness: {thickness}")
    
-    # 시각화 및 저장
     fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(8, 8), sharex=True, sharey=True)
     ax = axes.ravel()
-    ax[0].imshow(img)
-    ax[0].set_title('Original')
+    #thickness=measure_regression_thickness(mask_endo, all_coords, out_img,  step=5, probe_half_length=200)
+    thickness=measure_regression_thickness(mask_uterus, all_coords, out_img,  step=5, probe_half_length=200)
+    ax[0].imshow(img_copy)
+    ax[0].set_title(f'Regression (thickness={thickness})')
     ax[0].axis('off')
+    results.append(f"[Regression Method] thickness: {thickness}")
 
-    # 나머지 칸: step별 결과 이미지
     for i, (img, step, thickness) in enumerate(zip(img_list, steps, thickness_list), start=1):
         ax[i].imshow(img)
         ax[i].set_title(f'Step={step} (thickness={thickness})')
@@ -232,9 +234,3 @@ for image_name in images:
     with open('results.txt','a') as f:
         for each in results:
             f.write(each+'\n')
-    
-
-
-
-
-

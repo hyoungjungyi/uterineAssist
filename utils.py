@@ -280,7 +280,6 @@ def custom_connect(out_img, connect_points):
     return out_img, all_coords
 
 #각 스켈레톤의 엔드포인트 2개를 비교해서 더 cervix boundary 에 가까운걸 [0]으로, 더 먼걸 [1]로 함
-import numpy as np
 
 def reorder_endpoints_by_reference(endpoints_dict, reference_point):
     """
@@ -317,14 +316,17 @@ def get_orthogonal_direction(pt1, pt2):
     dx = pt2[1] - pt1[1]
     ortho_dy = dx
     ortho_dx = -dy
+
     length = np.sqrt(ortho_dy**2 + ortho_dx**2)
     if length > 0:
         ortho_dy /= length
         ortho_dx /= length
-    return ortho_dy, ortho_dx
+    return ortho_dy, ortho_dx # 직교 방향 단위 벡터
+
+  
 
 #직교하는 선이 2 영역에 얼마나 겹치는지 길이재기
-def measure_uterus_thickness(mask, all_coords, out_img, step=2, probe_half_length=30):
+def measure_simple_thickness(mask, all_coords, out_img,  step=2, probe_half_length=30):
     max_thickness = 0
     max_probe_coords = None
 
@@ -353,3 +355,51 @@ def measure_uterus_thickness(mask, all_coords, out_img, step=2, probe_half_lengt
 
     return max_thickness
 
+#점 5개의 회귀선 그려서 직교선으로 두께 재기 
+"""
+window = 점 5개 가 있는 np.array
+"""
+def find_regression(window):
+    x,y=[],[]
+    for dot in window:
+        x.append(dot[1])
+        y.append(dot[0])
+    slope,intercept=np.polyfit(x,y,1)
+    x_min,x_max=min(x),max(x)
+    pt1=(x_min,slope*x_min+intercept)
+    pt2=(x_max,slope*x_max+intercept)
+    return pt1, pt2 ,get_orthogonal_direction(pt1,pt2)
+
+
+def measure_regression_thickness(mask, all_coords, out_img,  step=5, probe_half_length=30):
+    max_thickness = 0
+    max_reg_coords = None
+    window=[]
+
+    for i in range(0, len(all_coords) - step, step):
+        window=all_coords[i:i+step]
+        if len(window)<5:
+            continue
+        pt1, pt2,(ortho_dy, ortho_dx) = find_regression(window)
+        center_y = int((pt1[1]+pt2[1]) / 2)
+        center_x = int((pt1[0]+pt2[0]) / 2)
+
+
+
+        probe_coords = [
+            (yy, xx)
+            for s in range(-probe_half_length, probe_half_length + 1)
+            if 0 <= (yy := int(center_y + s * ortho_dy)) < mask.shape[0]
+            and 0 <= (xx := int(center_x + s * ortho_dx)) < mask.shape[1]
+        ]
+
+        thickness = sum(mask[y, x] == 1 for y, x in probe_coords)
+        if thickness > max_thickness:
+            max_thickness = thickness
+            max_reg_coords = probe_coords
+
+    if max_reg_coords:
+        for y, x in max_reg_coords:
+            cv2.circle(out_img, (x, y), 1, (0, 0, 255), -1)  # 노란색 점
+
+    return max_thickness
