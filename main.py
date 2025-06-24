@@ -24,8 +24,8 @@ palette += [0] * (256*3 - len(palette))
     
 # 필요한 3개의 클래스에 대한 스켈레톤만 시각화
 image_dir = "/mnt/home/chaelin/hyunjung/skeleton/data/train/labels"
-# output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/endo_thickness"
-output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/uterus_thickness"
+output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/endo_thickness"
+#output_dir = r"/mnt/home/chaelin/hyunjung/skeleton/sk/uterus_thickness"
 os.makedirs(output_dir, exist_ok=True)
 images = os.listdir(image_dir)
 skeleton_coords=[]
@@ -201,17 +201,22 @@ for image_name in images:
     thickness_list=[]
     for step in steps:
         img_copy=img.copy()
-        thickness=measure_simple_thickness(mask_uterus,all_coords,img_copy,step=step,probe_half_length=400)
-        #thickness=measure_simple_thickness(mask_endo,all_coords,img_copy,step=step,probe_half_length=200)
+        #thickness=measure_simple_thickness(mask_uterus,all_coords,img_copy,step=step,probe_half_length=400)
+        thickness=measure_simple_thickness(mask_endo,all_coords,img_copy,step=step,probe_half_length=200)
         img_list.append(img_copy)
         thickness_list.append(thickness)
         results.append(f"[Simple Method] for {step} step, thickness: {thickness}")
    
     fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(8, 8), sharex=True, sharey=True)
     ax = axes.ravel()
-    #thickness=measure_regression_thickness(mask_endo, all_coords, out_img,  step=5, probe_half_length=200)
-    thickness=measure_regression_thickness(mask_uterus, all_coords, out_img,  step=5, probe_half_length=200)
-    ax[0].imshow(img_copy)
+
+    reg_img=img.copy()
+    thickness=0
+    thickness,list=measure_regression_thickness(mask_endo, all_coords, reg_img,  step=5, probe_half_length=400)
+    #thickness, list=measure_regression_thickness(mask_uterus, all_coords, reg_img,  step=5, probe_half_length=400)
+    results.append(f"history of thickness: {list}")
+    thickness_list.append(thickness)
+    ax[0].imshow(reg_img)
     ax[0].set_title(f'Regression (thickness={thickness})')
     ax[0].axis('off')
     results.append(f"[Regression Method] thickness: {thickness}")
@@ -230,6 +235,7 @@ for image_name in images:
 
 
     print(f"Saved skeleton image for {image_name} at {save_path}")
+    print(f"thickness of {image_name}: {thickness_list[2]}")
     
     with open('results.txt','a') as f:
         for each in results:

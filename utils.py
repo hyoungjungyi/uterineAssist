@@ -351,7 +351,7 @@ def measure_simple_thickness(mask, all_coords, out_img,  step=2, probe_half_leng
 
     if max_probe_coords:
         for y, x in max_probe_coords:
-            cv2.circle(out_img, (x, y), 1, (0, 255, 255), -1)  # 노란색 점
+            cv2.circle(out_img, (x, y), 1, (0,255, 255), -1)  # 노란색 점
 
     return max_thickness
 
@@ -366,8 +366,8 @@ def find_regression(window):
         y.append(dot[0])
     slope,intercept=np.polyfit(x,y,1)
     x_min,x_max=min(x),max(x)
-    pt1=(x_min,slope*x_min+intercept)
-    pt2=(x_max,slope*x_max+intercept)
+    pt1=(y[0],x[0])
+    pt2=(y[-1],x[-1])
     return pt1, pt2 ,get_orthogonal_direction(pt1,pt2)
 
 
@@ -375,14 +375,15 @@ def measure_regression_thickness(mask, all_coords, out_img,  step=5, probe_half_
     max_thickness = 0
     max_reg_coords = None
     window=[]
+    history_of_thick=[]
 
-    for i in range(0, len(all_coords) - step, step):
+    for i in range(0, len(all_coords) - step+1):
         window=all_coords[i:i+step]
         if len(window)<5:
             continue
         pt1, pt2,(ortho_dy, ortho_dx) = find_regression(window)
-        center_y = int((pt1[1]+pt2[1]) / 2)
-        center_x = int((pt1[0]+pt2[0]) / 2)
+        center_y = int((pt1[0]+pt2[0]) / 2)
+        center_x = int((pt1[1]+pt2[1]) / 2)
 
 
 
@@ -393,13 +394,17 @@ def measure_regression_thickness(mask, all_coords, out_img,  step=5, probe_half_
             and 0 <= (xx := int(center_x + s * ortho_dx)) < mask.shape[1]
         ]
 
+
+
         thickness = sum(mask[y, x] == 1 for y, x in probe_coords)
         if thickness > max_thickness:
+
             max_thickness = thickness
+            history_of_thick.append(max_thickness)
             max_reg_coords = probe_coords
 
     if max_reg_coords:
         for y, x in max_reg_coords:
-            cv2.circle(out_img, (x, y), 1, (0, 0, 255), -1)  # 노란색 점
+            cv2.circle(out_img, (x, y), 1, (0, 255, 255), -1)  # 노란색 점
 
-    return max_thickness
+    return max_thickness, history_of_thick
